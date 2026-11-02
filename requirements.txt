@@ -1,0 +1,8 @@
+streamlit
+pymongo[srv]
+python-dotenv
+plotly
+pandas
+google-genai
+bcrypt
+Pillow
