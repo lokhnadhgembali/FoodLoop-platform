@@ -87,33 +87,25 @@ def render():
               <p style="color:#64748B;font-size:0.88rem;">Sign in to your FoodLoop account</p>
             </div>""", unsafe_allow_html=True)
 
-            with st.form("login_form", border=False):
-                email_l = st.text_input("Email address", key="login_email", placeholder="you@organization.com")
-                password_l = st.text_input("Password", type="password", key="login_pass", placeholder="Enter your password")
-                submitted = st.form_submit_button("Sign in to FoodLoop", use_container_width=True, type="primary")
+            email_l    = st.text_input("Email", key="login_email", placeholder="you@example.com")
+            password_l = st.text_input("Password", type="password", key="login_pass", placeholder="••••••••")
 
-            if submitted:
-                if not email_l.strip() or not password_l:
-                    st.warning("Please enter your email address and password.")
+            if st.button("Sign In →", key="login_submit", use_container_width=True, type="primary"):
+                if not email_l or not password_l:
+                    st.warning("Please enter your email and password.")
                 else:
-                    try:
-                        with st.spinner("Signing you in..."):
-                            user = database.authenticate(email_l.strip().lower(), password_l)
-                    except Exception:
-                        st.error("We couldn't sign you in right now. Please try again shortly.")
+                    user = database.authenticate(email_l.strip(), password_l)
+                    if user:
+                        _set_session(user)
+                        st.rerun()
                     else:
-                        if user:
-                            _set_session(user)
-                            st.rerun()
-                        else:
-                            st.error("Email or password is incorrect. Please check your details and try again.")
+                        st.error("❌ Invalid email or password. Try a demo account below.")
 
-            st.caption("Your next food rescue starts here.")
-            with st.expander("Exploring FoodLoop? Try a demo"):
-                st.caption("Demo accounts use shared sample data. Do not enter personal information.")
-                for label, email, pw, role in DEMO_ACCOUNTS:
-                    if st.button(label, key=f"demo_{role}", use_container_width=True):
-                        _demo_login(email, pw)
+            st.markdown("---")
+            st.markdown("**⚡ 1-Click Demo Logins**")
+            for label, email, pw, role in DEMO_ACCOUNTS:
+                if st.button(label, key=f"demo_{role}", use_container_width=True):
+                    _demo_login(email, pw)
 
         # ─── SIGNUP TAB ────────────────────────────────────────────────────
         with t2:
