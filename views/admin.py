@@ -1,253 +1,240 @@
 """
-views/admin.py  –  FoodLoop Admin Panel
-Restricted to admin users only.
+views/admin.py  -  FoodLoop Admin Control Center
+Role: admin
 """
 import streamlit as st
 import pandas as pd
 import database
-from utils import fmt_kg, fmt_num, export_history_csv
+from utils import fmt_kg, fmt_num, format_countdown, export_history_csv
 
-BLUE  = "#014BAA"
-CORAL = "#D9381E"
-CREAM = "#F8F3F0"
-NAVY  = "#06152D"
+ROLE_LABELS = {"donor": "Donor", "recipient": "NGO", "admin": "Admin"}
 
 
-def _kpi_card(col, icon: str, label: str, value: str, color: str = BLUE) -> None:
-    col.markdown(f"""
-    <div style="background:white;border-radius:16px;border:1px solid rgba(1,75,170,0.08);
-         box-shadow:0 8px 30px rgba(1,75,170,0.06);padding:20px;text-align:center;margin:4px;">
-      <div style="font-size:1.6rem;margin-bottom:6px;">{icon}</div>
-      <div style="font-size:1.5rem;font-weight:900;color:{color};">{value}</div>
-      <div style="font-size:0.78rem;font-weight:600;color:#64748B;margin-top:4px;">{label}</div>
-    </div>""", unsafe_allow_html=True)
+def _sid(doc) -> str:
+    return str(doc.get("_id", ""))
 
 
-def render() -> None:
-    # ── Page Header ──────────────────────────────────────────────────────────
-    st.markdown(f"""
-    <div style="padding:24px 32px 8px;">
-      <h1 style="font-size:2rem;font-weight:900;color:{NAVY};margin:0;">🛡️ Admin Panel</h1>
-      <p style="color:#64748B;margin-top:4px;">Manage users, monitor platform activity, and export data.</p>
+def _kpi_strip(users, listings, requests, stats):
+    verified = sum(1 for u in users if u.get("is_verified"))
+    active = sum(1 for l in listings if l.get("status") == "available")
+    pending = sum(1 for r in requests if r.get("status") == "pending")
+
+    cards = [
+        ("🏫", fmt_num(len(users)),                        "Organizations"),
+        ("🛡️", fmt_num(verified),                           "Verified Accounts"),
+        ("📦", fmt_num(active),                             "Active Listings"),
+        ("📬", fmt_num(pending),                            "Pending Claims"),
+        ("✅", fmt_num(stats.get("completed_pickups", 0)),  "Completed Pickups"),
+    ]
+    html = "".join(
+        f'<div class="fl-kpi"><div class="fl-kpi-icon">{icon}</div>'
+        f'<div class="fl-kpi-val">{val}</div>'
+        f'<div class="fl-kpi-label">{label}</div></div>'
+        for icon, val, label in cards
+    )
+    st.markdown(f'<div class="fl-kpi-grid">{html}</div>', unsafe_allow_html=True)
+
+
+# ── Verification ────────────────────────────────────────────────────────────
+def _verification_tab(users):
+    st.markdown("""
+    <div class="fl-card-title">🛡️ Organization Verification</div>
+    <div class="fl-card-sub">
+      Only verified donors and NGOs should transact. Verify new organizations after checking
+      their details, or revoke access if something looks wrong.
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Admin KPI Strip ───────────────────────────────────────────────────────
-    try:
-        stats = database.get_platform_stats()
-    except Exception as exc:
-        st.error(f"Failed to load platform stats: {exc}")
-        stats = {}
+    role_filter = st.selectbox(
+        "Filter by account type",
+        ["All", "donor", "recipient", "admin"],
+        format_func=lambda r: "All accounts" if r == "All" else ROLE_LABELS.get(r, r),
+        key="admin_role_filter",
+    )
+    filtered = users if role_filter == "All" else [u for u in users if u.get("role") == role_filter]
 
-    kc1, kc2, kc3, kc4 = st.columns(4)
-    _kpi_card(kc1, "👥", "Total Users",        fmt_num(stats.get("total_users", 0)),        BLUE)
-    _kpi_card(kc2, "📦", "Active Listings",    str(stats.get("active_listings", 0)),         "#7C3AED")
-    _kpi_card(kc3, "📋", "Total Requests",     str(stats.get("total_requests", 0)),          "#059669")
-    _kpi_card(kc4, "✅", "Completed Pickups",  str(stats.get("completed_pickups", 0)),       "#D97706")
+    if not filtered:
+        st.info("No accounts match this filter.")
+        return
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab_users, tab_monitor, tab_export = st.tabs([
-        "👥 User Management",
-        "📋 Platform Monitor",
-        "📤 Export Data",
-    ])
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # TAB 1 – User Management
-    # ═════════════════════════════════════════════════════════════════════════
-    with tab_users:
-        st.markdown("### 👥 User Management")
-
-        try:
-            users = database.get_all_users()
-        except Exception as exc:
-            st.error(f"Could not load users: {exc}")
-            users = []
-
-        if not users:
-            st.info("No users found.")
-        else:
-            # Role filter
-            roles = ["All"] + sorted({u.get("role", "Unknown") for u in users})
-            selected_role = st.selectbox("Filter by Role", roles, key="admin_role_filter")
-
-            filtered = (
-                users if selected_role == "All"
-                else [u for u in users if u.get("role") == selected_role]
-            )
-
-            st.markdown(f"**{len(filtered)} user(s) shown**")
-
-            for user in filtered:
-                uid        = user.get("id") or user.get("user_id")
-                name       = user.get("name", "N/A")
-                email      = user.get("email", "N/A")
-                role       = user.get("role", "N/A")
-                verified   = bool(user.get("is_verified", False))
-                badge_col  = "#059669" if verified else "#D97706"
-                badge_text = "✅ Verified" if verified else "⏳ Unverified"
-
-                with st.container():
-                    col_info, col_btn = st.columns([5, 1])
-                    with col_info:
-                        st.markdown(f"""
-                        <div style="background:white;border:1px solid #E2E8F0;border-radius:12px;
-                             padding:14px 18px;margin-bottom:8px;">
-                          <span style="font-weight:700;color:{NAVY};">{name}</span>
-                          &nbsp;·&nbsp;
-                          <span style="color:#64748B;font-size:0.85rem;">{email}</span>
-                          &nbsp;·&nbsp;
-                          <span style="background:{BLUE}22;color:{BLUE};border-radius:6px;
-                               padding:2px 8px;font-size:0.8rem;font-weight:600;">{role}</span>
-                          &nbsp;
-                          <span style="background:{badge_col}22;color:{badge_col};border-radius:6px;
-                               padding:2px 8px;font-size:0.8rem;font-weight:600;">{badge_text}</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    with col_btn:
-                        btn_label = "Revoke" if verified else "Verify"
-                        btn_color = CORAL if verified else "#059669"
-                        if st.button(btn_label, key=f"toggle_{uid}",
-                                     help=f"{'Revoke verification for' if verified else 'Verify'} {name}"):
-                            try:
-                                database.toggle_user_verification(uid, not verified)
-                                st.success(f"{'Revoked' if verified else 'Verified'} {name}.")
-                                st.rerun()
-                            except Exception as exc:
-                                st.error(f"Action failed: {exc}")
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # TAB 2 – Platform Monitor
-    # ═════════════════════════════════════════════════════════════════════════
-    with tab_monitor:
-        st.markdown("### 📋 Platform Monitor")
-
-        # ── Listings ─────────────────────────────────────────────────────────
-        st.markdown("#### 📦 All Listings")
-        try:
-            listings = database.get_all_listings()
-        except Exception as exc:
-            st.error(f"Could not load listings: {exc}")
-            listings = []
-
-        if listings:
-            df_listings = pd.DataFrame(listings)
-            # Friendly column display
-            col_cfg: dict = {}
-            if "quantity_kg" in df_listings.columns:
-                col_cfg["quantity_kg"] = st.column_config.NumberColumn("Qty (kg)", format="%.1f kg")
-            if "is_active" in df_listings.columns:
-                col_cfg["is_active"] = st.column_config.CheckboxColumn("Active")
-            if "pickup_deadline" in df_listings.columns:
-                col_cfg["pickup_deadline"] = st.column_config.TextColumn("Pickup Deadline")
-
-            st.dataframe(df_listings, use_container_width=True, hide_index=True,
-                         column_config=col_cfg)
-
-            # Quick-action: cancel a listing
-            with st.expander("⚠️ Cancel a Listing"):
-                listing_ids = [str(row.get("id") or row.get("listing_id", "")) for row in listings]
-                sel_id = st.selectbox("Select Listing ID to cancel", listing_ids,
-                                      key="cancel_listing_sel")
-                if st.button("Cancel Listing", key="cancel_listing_btn"):
-                    try:
-                        database.cancel_listing(int(sel_id))
-                        st.success(f"Listing {sel_id} cancelled.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Cancel failed: {exc}")
-        else:
-            st.info("No listings found.")
-
-        st.divider()
-
-        # ── Requests ─────────────────────────────────────────────────────────
-        st.markdown("#### 📋 All Requests")
-        try:
-            requests = database.get_all_requests()
-        except Exception as exc:
-            st.error(f"Could not load requests: {exc}")
-            requests = []
-
-        if requests:
-            df_req = pd.DataFrame(requests)
-            req_col_cfg: dict = {}
-            if "status" in df_req.columns:
-                req_col_cfg["status"] = st.column_config.TextColumn("Status")
-            if "requested_at" in df_req.columns:
-                req_col_cfg["requested_at"] = st.column_config.TextColumn("Requested At")
-
-            st.dataframe(df_req, use_container_width=True, hide_index=True,
-                         column_config=req_col_cfg)
-
-            # Quick-actions: approve / reject
-            with st.expander("✅ Approve / ❌ Reject a Request"):
-                req_ids = [str(row.get("id") or row.get("request_id", "")) for row in requests]
-                sel_req = st.selectbox("Select Request ID", req_ids, key="req_action_sel")
-                col_approve, col_reject = st.columns(2)
-                with col_approve:
-                    if st.button("Approve", key="approve_req_btn"):
-                        try:
-                            database.approve_request(int(sel_req))
-                            st.success(f"Request {sel_req} approved.")
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Approve failed: {exc}")
-                with col_reject:
-                    if st.button("Reject", key="reject_req_btn"):
-                        try:
-                            database.reject_request(int(sel_req))
-                            st.warning(f"Request {sel_req} rejected.")
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Reject failed: {exc}")
-        else:
-            st.info("No requests found.")
-
-        st.divider()
-
-        # ── Summary Stats ────────────────────────────────────────────────────
-        st.markdown("#### 📊 Quick Stats")
-        active_count = sum(1 for r in listings if r.get("is_active", False)) if listings else 0
-        completed    = stats.get("completed_pickups", 0)
-
-        sc1, sc2, sc3, sc4 = st.columns(4)
-        sc1.metric("Total Listings",    len(listings))
-        sc2.metric("Active Listings",   active_count)
-        sc3.metric("Total Requests",    len(requests))
-        sc4.metric("Completed Pickups", completed)
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # TAB 3 – Export Data
-    # ═════════════════════════════════════════════════════════════════════════
-    with tab_export:
-        st.markdown("### 📤 Export Data")
-        st.markdown(
-            "Download the full donation history as a CSV file. "
-            "This includes all completed and cancelled transactions."
+    for user in filtered:
+        uid = _sid(user)
+        verified = bool(user.get("is_verified"))
+        role = user.get("role", "donor")
+        badge = (
+            '<span class="fl-badge-ok">VERIFIED</span>' if verified
+            else '<span class="fl-badge-warn">PENDING</span>'
         )
+        st.markdown(f"""
+        <div class="fl-user-row">
+          <div>
+            <div class="fl-user-name">{user.get('name', 'Unknown')} &nbsp;{badge}
+              <span class="fl-role-tag fl-role-{'recipient' if role == 'recipient' else role}">
+                {ROLE_LABELS.get(role, role)}
+              </span>
+            </div>
+            <div class="fl-user-meta">
+              {user.get('email', '')} &nbsp;·&nbsp; 📍 {user.get('address') or '—'}
+              &nbsp;·&nbsp; 🏅 {fmt_num(user.get('reward_points', 0) or 0)} pts
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        try:
-            history = database.get_all_history()
-            csv_content = export_history_csv(history)
+        ca, _, _ = st.columns([1.3, 1, 4])
+        with ca:
+            label = "Revoke verification" if verified else "Verify organization"
+            if st.button(label, key=f"verify_{uid}", use_container_width=True,
+                         type="secondary" if verified else "primary"):
+                try:
+                    database.toggle_user_verification(uid, not verified)
+                except Exception as exc:
+                    st.error(f"Could not update verification: {exc}")
+                else:
+                    st.rerun()
 
-            st.download_button(
-                label="⬇️ Download Donation History CSV",
-                data=csv_content,
-                file_name="foodloop_donation_history.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
 
-            if history:
-                st.markdown(f"**{len(history)} record(s)** available for export.")
-                with st.expander("👁️ Preview (first 20 rows)"):
-                    df_hist = pd.DataFrame(history[:20])
-                    st.dataframe(df_hist, use_container_width=True, hide_index=True)
+# ── Health monitor ──────────────────────────────────────────────────────────
+def _health_tab(listings, requests):
+    st.markdown("""
+    <div class="fl-card-title">❤️ Platform Health &amp; Expiry Monitor</div>
+    <div class="fl-card-sub">
+      Run the expiry sweep to close listings past their safe pickup window, then audit live
+      listings and every claim on the platform.
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2 = st.columns([1.2, 2])
+    with c1:
+        if st.button("⏱️ Trigger auto-expiry sweep", key="expiry_sweep",
+                     use_container_width=True, type="primary"):
+            try:
+                expired = database.expire_old_listings()
+            except Exception as exc:
+                st.error(f"Expiry sweep failed: {exc}")
             else:
-                st.info("No history records found.")
+                st.success(f"Sweep complete — {expired} listing(s) marked expired.")
+    with c2:
+        try:
+            expiring = database.get_expiring_listings(hours=6)
+        except Exception:
+            expiring = []
+        st.markdown(
+            f'<div class="fl-card-sub" style="margin:8px 0 0;">'
+            f'<b>{len(expiring)}</b> available listing(s) expire within 6 hours.</div>',
+            unsafe_allow_html=True)
 
-        except Exception as exc:
-            st.error(f"Export failed: {exc}")
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="fl-card-title" style="font-size:0.9rem;">📦 Live &amp; Recent Listings</div>',
+                unsafe_allow_html=True)
+    if listings:
+        df_listings = pd.DataFrame([{
+            "Food":       l.get("food_name", ""),
+            "Category":   l.get("category", ""),
+            "Donor":      l.get("donor_name", ""),
+            "Remaining":  round(float(l.get("remaining_qty_kg", 0) or 0), 1),
+            "Status":     l.get("status", ""),
+            "Location":   l.get("location", ""),
+            "Time Left":  format_countdown(l.get("pickup_deadline")),
+        } for l in listings])
+        st.dataframe(df_listings, use_container_width=True, hide_index=True)
+    else:
+        st.info("No listings on the platform yet.")
+
+    st.markdown('<div class="fl-card-title" style="font-size:0.9rem;">📬 Transaction Audit</div>',
+                unsafe_allow_html=True)
+    if requests:
+        df_reqs = pd.DataFrame([{
+            "Food":       r.get("food_name", ""),
+            "NGO":        r.get("recipient_name", ""),
+            "Donor":      r.get("donor_name", ""),
+            "Qty (kg)":   round(float(r.get("requested_qty_kg", 0) or 0), 1),
+            "Status":     r.get("status", ""),
+            "PIN Issued": bool(r.get("pickup_pin")),
+        } for r in requests])
+        st.dataframe(df_reqs, use_container_width=True, hide_index=True)
+    else:
+        st.info("No claims recorded yet.")
+
+
+# ── Export ──────────────────────────────────────────────────────────────────
+def _export_tab():
+    st.markdown("""
+    <div class="fl-card-title">📤 Export Donation History</div>
+    <div class="fl-card-sub">
+      Download the full audit trail of completed donations for SDG-12 reporting and compliance.
+    </div>
+    """, unsafe_allow_html=True)
+
+    try:
+        history = database.get_all_history() or []
+    except Exception as exc:
+        st.error(f"Could not load donation history: {exc}")
+        return
+
+    if not history:
+        st.info("No completed donations recorded yet.")
+        return
+
+    csv_data = export_history_csv(history)
+    total_kg = sum(float(h.get("quantity_kg", 0) or 0) for h in history)
+    st.markdown(
+        f'<div class="fl-card-sub" style="margin-bottom:14px;">'
+        f'<b>{len(history)}</b> completed donations · <b>{fmt_kg(total_kg)}</b> redistributed.</div>',
+        unsafe_allow_html=True)
+
+    st.download_button(
+        "⬇️ Download donation_history.csv",
+        data=csv_data,
+        file_name="foodloop_donation_history.csv",
+        mime="text/csv",
+        use_container_width=True,
+        type="primary",
+    )
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    st.markdown("**Latest 20 records**")
+    df = pd.DataFrame(history[:20])
+    df = df.drop(columns=[c for c in ("_id",) if c in df.columns])
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ── Render ──────────────────────────────────────────────────────────────────
+def render():
+    try:
+        users = database.get_all_users() or []
+        listings = database.get_all_listings() or []
+        requests = database.get_all_requests() or []
+        stats = database.get_platform_stats() or {}
+    except Exception as exc:
+        st.error(f"Could not load admin data: {exc}")
+        users, listings, requests, stats = [], [], [], {}
+
+    st.markdown(f"""
+    <div class="fl-page-head fl-wrap-wide">
+      <h1 class="fl-page-title">🛡️ Admin Control Center</h1>
+      <p class="fl-page-sub">
+        {st.session_state.get('user_name', 'Administrator')}, verify organizations,
+        monitor expiries and audit every transaction.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.container(key="admin_body"):
+        _kpi_strip(users, listings, requests, stats)
+
+        tab_verify, tab_health, tab_export = st.tabs(
+            ["🛡️ Verification", "❤️ Platform Health", "📤 Audit & Export"]
+        )
+        with tab_verify:
+            with st.container(key="admin_verify"):
+                _verification_tab(users)
+        with tab_health:
+            with st.container(key="admin_health"):
+                _health_tab(listings, requests)
+        with tab_export:
+            with st.container(key="admin_export"):
+                _export_tab()
+
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)

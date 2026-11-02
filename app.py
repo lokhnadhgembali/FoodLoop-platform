@@ -1,125 +1,179 @@
 """
-app.py  –  FoodLoop  ·  Main Streamlit Entry Point
-Modern SaaS UI with three page states: landing | auth | dashboard | analytics
+app.py  -  FoodLoop  ·  Main Streamlit Entry Point
+Page states:  landing | auth | dashboard | analytics
 """
 import streamlit as st
 
-# ── Page config (MUST be first Streamlit call) ──────────────────────────────
+# ── Page config (must be the first Streamlit call) ──────────────────────────
 st.set_page_config(
     page_title="FoodLoop – Rescue Surplus Food",
-    page_icon="🍲",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# ── Inject global CSS ───────────────────────────────────────────────────────
+# ── Global stylesheet ───────────────────────────────────────────────────────
 from styles import get_css
 st.markdown(get_css(), unsafe_allow_html=True)
 
-# ── Initialize session state defaults ──────────────────────────────────────
-_defaults = {
-    "page":          "landing",
-    "auth_mode":     "login",
-    "signup_role":   "donor",
-    "authenticated": False,
-    "user_id":       None,
-    "user_name":     None,
-    "user_role":     None,
-    "is_verified":   False,
-}
-for k, v in _defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-# ── Initialize database (seeding etc.) ─────────────────────────────────────
+# ── Database ────────────────────────────────────────────────────────────────
 import database
 try:
     database.initialize()
-except Exception as e:
-    st.warning(f"DB init warning: {e}")
+except Exception as _e:      # never block the UI on a DB hiccup
+    st.warning(f"⚠️ Database notice: {_e}")
 
-# ── Import views ────────────────────────────────────────────────────────────
+
+# ── Session restore (survives a browser refresh) ────────────────────────────
+def _restore_session_from_query():
+    """Re-authenticate from ?session=<token> when session_state is fresh."""
+    if st.session_state.get("authenticated"):
+        return
+    try:
+        token = st.query_params.get("session")
+    except Exception:
+        token = None
+    if not token:
+        return
+    try:
+        user = database.get_user_by_session_token(token)
+    except Exception:
+        user = None
+    if not user:
+        # stale / invalid token → clean URL and fall back to the landing page
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+        return
+    st.session_state.authenticated  = True
+    st.session_state.user_id        = str(user.get("_id", ""))
+    st.session_state.user_name      = user.get("name", "User")
+    st.session_state.user_role      = user.get("role", "donor")
+    st.session_state.is_verified    = bool(user.get("is_verified", False))
+    st.session_state.reward_points  = int(user.get("reward_points", 0) or 0)
+    st.session_state.session_token  = token
+    try:
+        view = st.query_params.get("view", "dashboard")
+    except Exception:
+        view = "dashboard"
+    st.session_state.page = view if view in ("dashboard", "analytics") else "dashboard"
+    st.session_state.auth_mode = "login"
+
+
+_restore_session_from_query()
+
+# ── Session defaults ────────────────────────────────────────────────────────
+_DEFAULTS = {
+    "page":         "landing",
+    "auth_mode":    "login",
+    "signup_role":  "donor",
+    "authenticated": False,
+    "user_id":      None,
+    "user_name":    None,
+    "user_role":    None,
+    "is_verified":  False,
+    "reward_points": 0,
+    "session_token": None,
+}
+for _k, _v in _DEFAULTS.items():
+    st.session_state.setdefault(_k, _v)
+
 from views import landing, auth, donor, recipient, admin, analytics
+from utils import get_logo_img
+
+ROLE_META = {
+    "donor":     ("Donor",  "fl-role-donor"),
+    "recipient": ("NGO",    "fl-role-recipient"),
+    "ngo":       ("NGO",    "fl-role-recipient"),
+    "admin":     ("Admin",  "fl-role-admin"),
+}
 
 
-# ── Dashboard top nav (shown when authenticated, not on analytics page) ────
+def _refresh_session_user():
+    """Keep verification + reward points fresh from the database."""
+    uid = st.session_state.get("user_id")
+    if not uid:
+        return
+    try:
+        user = database.get_user_by_id(uid)
+    except Exception:
+        user = None
+    if user:
+        st.session_state.user_name = user.get("name", st.session_state.user_name)
+        st.session_state.is_verified = bool(user.get("is_verified", False))
+        st.session_state.reward_points = int(user.get("reward_points", 0) or 0)
+
+
+def _logout():
+    """Explicit logout: invalidate the DB token, clear URL params, reset state."""
+    token = st.session_state.get("session_token")
+    if not token:
+        try:
+            token = st.query_params.get("session")
+        except Exception:
+            token = None
+    try:
+        database.clear_session_token(token)
+    except Exception:
+        pass
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+    for k, v in _DEFAULTS.items():
+        st.session_state[k] = v
+    st.session_state.page = "landing"
+    st.rerun()
+
+
+# ── Dashboard navbar ────────────────────────────────────────────────────────
 def _render_dash_nav():
-    from utils import get_logo_img
-    logo_b64 = get_logo_img(height=32, variant="blue", margin_right="0")
-    role_colors = {"donor": "#014BAA", "recipient": "#059669", "ngo": "#059669", "admin": "#7C3AED"}
-    role_labels = {"donor": "Donor", "recipient": "NGO", "ngo": "NGO", "admin": "Admin"}
-    role = st.session_state.get("user_role", "donor")
-    role_color = role_colors.get(role, "#014BAA")
-    role_label = role_labels.get(role, role.capitalize())
-    user_name  = st.session_state.get("user_name", "User")
+    _refresh_session_user()
+    role       = st.session_state.get("user_role", "donor")
+    role_label, role_class = ROLE_META.get(role, (str(role).capitalize(), "fl-role-donor"))
+    user_name  = st.session_state.get("user_name") or "User"
     verified   = st.session_state.get("is_verified", False)
-    verified_badge = '<span style="color:#059669;font-size:0.75rem;font-weight:700;">✅ Verified</span>' if verified else ""
+    logo       = get_logo_img(height=26, variant="white", margin_right=0)
+    page       = st.session_state.get("page", "dashboard")
 
-    st.markdown(f"""
-    <div style="
-      background:rgba(255,255,255,0.9);
-      backdrop-filter:blur(20px);
-      -webkit-backdrop-filter:blur(20px);
-      border-bottom:1px solid rgba(1,75,170,0.08);
-      padding:10px 32px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      position:sticky;top:0;z-index:900;
-    ">
-      <div style="display:flex;align-items:center;gap:12px;">
-        <div style="width:36px;height:36px;background:linear-gradient(135deg,#014BAA,#0264E0);
-             border-radius:10px;display:flex;align-items:center;justify-content:center;
-             overflow:hidden;box-shadow:0 4px 12px rgba(1,75,170,0.3);">
-          {logo_b64}
-        </div>
-        <span style="font-size:1.15rem;font-weight:800;color:#014BAA;">FoodLoop</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:16px;">
-        <div style="text-align:right;">
-          <div style="font-size:0.9rem;font-weight:700;color:#0F172A;">{user_name}</div>
-          <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end;">
-            <span style="background:{role_color}15;color:{role_color};font-size:0.7rem;
-                   font-weight:800;padding:2px 10px;border-radius:999px;letter-spacing:0.5px;">
-              {role_label.upper()}
-            </span>
-            {verified_badge}
-          </div>
-        </div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    verified_html = (
+        '<span class="fl-verified">✅ Verified</span>' if verified
+        else '<span class="fl-verified" style="background:#FEF3C7;color:#92400E;">⏳ Pending</span>'
+    )
 
-    # Streamlit action buttons row
-    nb1, nb2, nb3, nb4 = st.columns([6, 1.2, 1.2, 1])
-    with nb2:
-        if st.button("📊 Analytics", key="nav_analytics", use_container_width=True):
-            st.session_state.page = "analytics"
-            st.rerun()
-    with nb3:
-        # Demo role switcher
-        roles_available = ["donor", "recipient", "admin"]
-        current_idx = roles_available.index(role) if role in roles_available else 0
-        new_role = st.selectbox(
-            "Switch Role",
-            options=roles_available,
-            index=current_idx,
-            key="role_switcher",
-            label_visibility="collapsed",
-        )
-        if new_role != role:
-            st.session_state.user_role = new_role
-            st.session_state.page = "dashboard"
-            st.rerun()
-    with nb4:
-        if st.button("Logout", key="nav_logout", use_container_width=True, type="secondary"):
-            for k in ["authenticated", "user_id", "user_name", "user_role", "is_verified"]:
-                st.session_state[k] = None if k != "authenticated" else False
-            st.session_state.page = "landing"
-            st.rerun()
+    with st.container(key="dash_nav"):
+        c_brand, c_analytics, c_dash, c_logout = st.columns([5.4, 1.35, 1.15, 0.95])
+        with c_brand:
+            st.markdown(f"""
+            <div class="fl-dash-user">
+              <span style="width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,#014BAA,#0264E0);
+                    display:inline-flex;align-items:center;justify-content:center;overflow:hidden;
+                    box-shadow:0 4px 12px rgba(1,75,170,.3);">{logo}</span>
+              <span class="fl-nav-name" style="font-size:1.02rem;letter-spacing:-.3px;">FoodLoop</span>
+              <span style="width:1px;height:20px;background:rgba(1,75,170,.12);margin:0 4px;"></span>
+              <span class="fl-dash-name">{user_name}</span>
+              {verified_html}
+              <span class="fl-role-tag {role_class}">{role_label}</span>
+            </div>
+            """, unsafe_allow_html=True)
+        with c_analytics:
+            if st.button("📊 Impact Analytics", key="nav_analytics",
+                         use_container_width=True,
+                         type="primary" if page == "analytics" else "secondary"):
+                st.session_state.page = "analytics"
+                st.rerun()
+        with c_dash:
+            if st.button("🏠 Workspace", key="nav_dashboard",
+                         use_container_width=True,
+                         type="primary" if page == "dashboard" else "secondary"):
+                st.session_state.page = "dashboard"
+                st.rerun()
+        with c_logout:
+            if st.button("Log Out", key="nav_logout", use_container_width=True):
+                _logout()
 
 
-# ── Main router ─────────────────────────────────────────────────────────────
+# ── Router ──────────────────────────────────────────────────────────────────
 page = st.session_state.get("page", "landing")
 
 if page == "landing":
@@ -128,31 +182,28 @@ if page == "landing":
 elif page == "auth":
     auth.render()
 
-elif page == "analytics":
+elif page in ("dashboard", "analytics"):
     if not st.session_state.get("authenticated"):
-        st.session_state.page = "landing"
+        st.session_state.page = "auth"
+        st.session_state.auth_mode = "login"
         st.rerun()
     else:
         _render_dash_nav()
-        analytics.render()
-
-elif page == "dashboard":
-    if not st.session_state.get("authenticated"):
-        st.session_state.page = "landing"
-        st.rerun()
-    else:
-        _render_dash_nav()
-        role = st.session_state.get("user_role", "donor")
-        if role == "donor":
-            donor.render()
-        elif role in ("recipient", "ngo"):
-            recipient.render()
-        elif role == "admin":
-            admin.render()
+        if page == "analytics":
+            analytics.render()
         else:
-            st.error(f"Unknown role: {role}")
+            role = st.session_state.get("user_role", "donor")
+            if role == "donor":
+                donor.render()
+            elif role in ("recipient", "ngo"):
+                recipient.render()
+            elif role == "admin":
+                admin.render()
+            else:
+                st.error(f"Unknown role: {role!r}")
+                if st.button("Back to Home", key="unknown_role_home"):
+                    _logout()
 
 else:
-    # Fallback
     st.session_state.page = "landing"
     st.rerun()

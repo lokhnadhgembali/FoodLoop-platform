@@ -1,279 +1,271 @@
 """
-FoodLoop – Donor Dashboard
+views/donor.py  -  FoodLoop Donor Hub
+Role: donor
 """
-
 import streamlit as st
 import database
 from utils import fmt_kg, fmt_num, format_countdown, is_urgent
 
-# ── colour palette ──────────────────────────────────────────────────────────
-BLUE   = "#014BAA"
-CREAM  = "#F8F3F0"
-CORAL  = "#D9381E"
-WHITE  = "#FFFFFF"
+CATEGORIES = ["Cooked Meals", "Bakery", "Produce", "Dairy", "Packaged"]
+STORAGE_OPTIONS = ["Room Temp", "Refrigerated", "Frozen"]
 
-# ── helpers ─────────────────────────────────────────────────────────────────
-
-def _card(body: str, border_color: str = BLUE) -> None:
-    st.markdown(
-        f"""
-        <div style="background:{WHITE};border-left:4px solid {border_color};
-                    border-radius:8px;padding:16px 20px;margin-bottom:12px;
-                    box-shadow:0 1px 4px rgba(0,0,0,.08);">
-            {body}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _badge(label: str, color: str = BLUE) -> str:
-    return (
-        f'<span style="background:{color};color:#fff;border-radius:4px;'
-        f'padding:2px 8px;font-size:0.75rem;font-weight:600;">{label}</span>'
-    )
-
-
-STATUS_COLORS = {
-    "pending":   "#F59E0B",
-    "approved":  "#10B981",
-    "rejected":  CORAL,
-    "completed": "#6B7280",
+TAG_CLASS = {
+    "Cooked Meals": "fl-tag-cooked",
+    "Bakery":       "fl-tag-bakery",
+    "Produce":      "fl-tag-produce",
+    "Dairy":        "fl-tag-dairy",
+    "Packaged":     "fl-tag-packaged",
 }
 
 
-# ── KPI strip ───────────────────────────────────────────────────────────────
+def _sid(doc) -> str:
+    return str(doc.get("_id", ""))
 
-def _render_kpis(donor_name: str) -> None:
-    stats = {}
-    try:
-        stats = database.get_platform_stats() or {}
-    except Exception:
-        pass
 
-    listings = []
-    try:
-        listings = database.get_donor_listings(donor_name) or []
-    except Exception:
-        pass
+def _req_qty(req) -> float:
+    return float(req.get("requested_qty_kg", req.get("quantity_kg", 0)) or 0)
 
-    requests = []
-    try:
-        requests = database.get_requests_for_donor(donor_name) or []
-    except Exception:
-        pass
 
-    active      = sum(1 for l in listings if l.get("status") == "available")
-    pending_req = sum(1 for r in requests if r.get("status") == "pending")
-    completed   = sum(1 for r in requests if r.get("status") == "completed")
-    total_kg    = sum(l.get("quantity_kg", 0) for l in listings)
+def _kpi_strip(listings, requests):
+    active    = sum(1 for l in listings if l.get("status") == "available")
+    pending   = sum(1 for r in requests if r.get("status") == "pending")
+    completed = sum(1 for r in requests if r.get("status") == "completed")
+    total_kg  = sum(float(r.get("requested_qty_kg", 0) or 0)
+                    for r in requests if r.get("status") == "completed")
+    if total_kg == 0:
+        total_kg = sum(float(l.get("quantity_kg", 0) or 0)
+                       for l in listings if l.get("status") == "collected")
+    points = int(st.session_state.get("reward_points", 0) or 0)
 
-    cols = st.columns(4)
-    kpis = [
-        ("📦", "Active Listings",    fmt_num(active)),
-        ("📬", "Pending Requests",   fmt_num(pending_req)),
-        ("✅", "Completed Pickups",  fmt_num(completed)),
-        ("⚖️", "Total kg Donated",   fmt_kg(total_kg)),
+    cards = [
+        ("📦", fmt_num(active),    "My Active Listings", ""),
+        ("📬", fmt_num(pending),   "Pending NGO Claims",  ""),
+        ("✅", fmt_num(completed), "Completed Pickups",   ""),
+        ("⚖️", fmt_kg(total_kg),   "Total kg Donated",    ""),
+        ("🏅", fmt_num(points),    "Reward Points",       ""),
     ]
-    for col, (icon, label, value) in zip(cols, kpis):
-        with col:
-            st.markdown(
-                f"""
-                <div style="background:{BLUE};color:#fff;border-radius:10px;
-                            padding:16px;text-align:center;">
-                    <div style="font-size:1.6rem;">{icon}</div>
-                    <div style="font-size:1.4rem;font-weight:700;">{value}</div>
-                    <div style="font-size:0.75rem;opacity:.85;">{label}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    html = "".join(
+        f'<div class="fl-kpi"><div class="fl-kpi-icon">{icon}</div>'
+        f'<div class="fl-kpi-val">{val}</div>'
+        f'<div class="fl-kpi-label">{label}</div></div>'
+        for icon, val, label, _ in cards
+    )
+    st.markdown(f'<div class="fl-kpi-grid">{html}</div>', unsafe_allow_html=True)
 
 
-# ── Tab 1 – Publish Surplus ─────────────────────────────────────────────────
+# ── Publish ─────────────────────────────────────────────────────────────────
+def _publish_form():
+    st.markdown("""
+    <div class="fl-card-title">📦 Publish Surplus Food</div>
+    <div class="fl-card-sub">
+      Add a listing with a safe pickup window. Verified NGOs can claim part or all of it
+      before the deadline.
+    </div>
+    """, unsafe_allow_html=True)
 
-def _tab_publish() -> None:
-    st.subheader("Publish New Surplus")
     with st.form("publish_form", clear_on_submit=True):
-        food_name    = st.text_input("Food Name *", placeholder="e.g. Dal Makhani")
-        category     = st.selectbox(
-            "Category *",
-            ["Cooked Meals", "Bakery", "Produce", "Packaged", "Beverages"],
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            quantity_kg  = st.number_input("Quantity (kg) *", min_value=0.5, step=0.5, value=1.0)
-        with col2:
-            servings     = st.number_input("Servings *", min_value=1, step=1, value=4)
-        storage_note = st.text_input("Storage Note (optional)", placeholder="e.g. Keep refrigerated")
-        safe_hours   = st.slider("Safe for (hours) *", min_value=1, max_value=48, value=6)
-        location     = st.text_input("Location *", value="Punjab, India")
+        c1, c2 = st.columns(2)
+        with c1:
+            food_name = st.text_input("Food Name", placeholder="e.g. Dal Makhani & Rice")
+        with c2:
+            category = st.selectbox("Category", CATEGORIES)
 
-        submitted = st.form_submit_button("🚀 Publish Listing", use_container_width=True)
+        c3, c4 = st.columns(2)
+        with c3:
+            quantity_kg = st.number_input("Quantity (kg)", min_value=0.5, max_value=500.0,
+                                          value=5.0, step=0.5)
+        with c4:
+            meals = st.number_input("Estimated Meals", min_value=1, max_value=2000,
+                                    value=int(quantity_kg * 2), step=1)
+
+        c5, c6 = st.columns(2)
+        with c5:
+            storage = st.selectbox("Storage", STORAGE_OPTIONS)
+        with c6:
+            safe_hours = st.slider("Safe Pickup Window (hours)", 1, 48, 6)
+
+        location = st.text_input("Pickup Location", value="LPU Campus, Phagwara")
+        note = st.text_input("Storage Note (optional)", placeholder="Keep refrigerated until pickup")
+
+        submitted = st.form_submit_button("Publish Surplus Listing", use_container_width=True,
+                                          type="primary")
 
     if submitted:
         if not food_name.strip():
-            st.error("Please enter a food name.")
-            return
-        if not location.strip():
-            st.error("Please enter a location.")
-            return
-        try:
-            database.add_listing(
-                donor_name   = st.session_state.get("user_name", ""),
-                food_name    = food_name.strip(),
-                category     = category,
-                quantity_kg  = quantity_kg,
-                servings     = int(servings),
-                storage_note = storage_note.strip(),
-                safe_hours   = safe_hours,
-                location     = location.strip(),
-                donor_id     = st.session_state.get("user_id", ""),
-            )
-            st.success(f"✅ '{food_name}' listed successfully! NGOs can now claim it.")
-        except Exception as exc:
-            st.error(f"Failed to publish listing: {exc}")
+            st.error("Please enter the food name.")
+        elif not location.strip():
+            st.error("Please enter a pickup location.")
+        else:
+            try:
+                database.add_listing(
+                    donor_id=st.session_state.get("user_id", ""),
+                    donor_name=st.session_state.get("user_name", ""),
+                    food_name=food_name.strip(),
+                    category=category,
+                    quantity_kg=float(quantity_kg),
+                    servings=int(meals),
+                    storage=storage,
+                    safe_hours=int(safe_hours),
+                    location=location.strip(),
+                    description=note.strip(),
+                )
+            except Exception as exc:
+                st.error(f"Could not publish listing: {exc}")
+            else:
+                st.success(f"✅ '{food_name.strip()}' is live — NGOs can claim it now.")
+                st.rerun()
 
 
-# ── Tab 2 – Incoming Requests ────────────────────────────────────────────────
-
-def _tab_requests(donor_name: str) -> None:
-    st.subheader("Incoming Requests")
-
-    requests = []
-    try:
-        requests = database.get_requests_for_donor(donor_name) or []
-    except Exception as exc:
-        st.error(f"Could not load requests: {exc}")
-        return
+# ── Incoming requests ───────────────────────────────────────────────────────
+def _requests_queue(requests):
+    st.markdown("""
+    <div class="fl-card-title">📬 Incoming NGO Requests</div>
+    <div class="fl-card-sub">
+      Approving a claim issues a secret 4-digit pickup PIN to the NGO. The PIN is never
+      shown here — the NGO presents it at handover.
+    </div>
+    """, unsafe_allow_html=True)
 
     if not requests:
-        st.info("No requests yet. Publish surplus to attract NGOs!")
+        st.markdown("""
+        <div class="fl-empty">
+          <div class="fl-empty-icon">📭</div>
+          <div class="fl-empty-title">No claims yet</div>
+          <div class="fl-empty-sub">NGOs will appear here as soon as they claim your listings.</div>
+        </div>
+        """, unsafe_allow_html=True)
         return
 
     for req in requests:
-        req_id      = req.get("id") or req.get("request_id")
-        food_name   = req.get("food_name", "Unknown Food")
-        requester   = req.get("recipient_name", "Unknown NGO")
-        qty         = req.get("quantity_kg", 0)
-        status      = req.get("status", "pending").lower()
-        pin         = req.get("pin") or req.get("pickup_pin")
-        badge_color = STATUS_COLORS.get(status, BLUE)
+        rid = _sid(req)
+        status = (req.get("status") or "pending").lower()
+        st.markdown(f"""
+        <div class="fl-req-card {status}">
+          <div class="fl-req-title">{req.get('food_name', 'Surplus food')}</div>
+          <div class="fl-req-meta">
+            🤝 <b>{req.get('recipient_name', 'NGO')}</b> &nbsp;·&nbsp;
+            ⚖️ {fmt_kg(_req_qty(req))} &nbsp;·&nbsp;
+            📍 {req.get('location') or 'Campus pickup'}
+          </div>
+          <div style="margin-top:8px;">
+            <span class="fl-status fl-status-{status}">{status}</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        body = (
-            f"<b>{food_name}</b> &nbsp; {_badge(status.upper(), badge_color)}<br>"
-            f"<span style='color:#555;font-size:.9rem;'>Requester: <b>{requester}</b> &nbsp;|&nbsp; "
-            f"Qty: <b>{fmt_kg(qty)}</b></span>"
-        )
-
-        if status == "approved" and pin:
-            body += (
-                f"<br><div style='margin-top:8px;background:{CREAM};border-radius:6px;"
-                f"padding:8px 12px;display:inline-block;'>"
-                f"🔑 Pickup PIN: <span style='font-family:monospace;font-size:1.2rem;"
-                f"font-weight:700;color:{BLUE};'>{pin}</span></div>"
-            )
-
-        _card(body, border_color=badge_color)
-
-        if status == "pending" and req_id is not None:
-            col_a, col_b, _ = st.columns([1, 1, 4])
-            with col_a:
-                if st.button("✅ Approve", key=f"approve_{req_id}"):
+        if status == "pending":
+            ca, cb, _ = st.columns([1, 1, 4])
+            with ca:
+                if st.button("Approve claim", key=f"approve_{rid}", use_container_width=True,
+                             type="primary"):
                     try:
-                        result = database.approve_request(req_id)
-                        new_pin = (
-                            result.get("pin") or result.get("pickup_pin")
-                            if isinstance(result, dict) else None
-                        )
-                        msg = "Request approved!"
-                        if new_pin:
-                            msg += f" PIN: **{new_pin}**"
-                        st.success(msg)
-                        st.rerun()
+                        ok, msg = database.approve_request(rid)
                     except Exception as exc:
                         st.error(f"Approval failed: {exc}")
-            with col_b:
-                if st.button("❌ Reject", key=f"reject_{req_id}"):
+                    else:
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+            with cb:
+                if st.button("Reject claim", key=f"reject_{rid}", use_container_width=True):
                     try:
-                        database.reject_request(req_id)
-                        st.warning("Request rejected.")
-                        st.rerun()
+                        database.reject_request(rid)
                     except Exception as exc:
                         st.error(f"Rejection failed: {exc}")
+                    else:
+                        st.warning("Claim rejected.")
+                        st.rerun()
 
 
-# ── Tab 3 – PIN Verify ───────────────────────────────────────────────────────
+# ── PIN handshake ───────────────────────────────────────────────────────────
+def _pin_handshake(requests):
+    st.markdown("""
+    <div class="fl-card-title">🔐 4-Digit PIN Handshake</div>
+    <div class="fl-card-sub">
+      At the pickup venue the NGO shows their pickup pass. Enter those 4 digits to confirm
+      the handover — this completes the request, closes the listing and logs the impact.
+    </div>
+    """, unsafe_allow_html=True)
 
-def _tab_pin_verify(donor_name: str) -> None:
-    st.subheader("Verify Pickup PIN")
-    st.caption("Confirm an NGO's pickup by validating their 4-digit PIN.")
-
-    approved_requests = []
-    try:
-        all_reqs = database.get_requests_for_donor(donor_name) or []
-        approved_requests = [r for r in all_reqs if r.get("status") == "approved"]
-    except Exception as exc:
-        st.error(f"Could not load approved requests: {exc}")
+    approved = [r for r in requests if r.get("status") == "approved"]
+    if not approved:
+        st.markdown("""
+        <div class="fl-empty">
+          <div class="fl-empty-icon">🔑</div>
+          <div class="fl-empty-title">No approved pickups waiting</div>
+          <div class="fl-empty-sub">Approve a pending claim first, then verify its PIN here.</div>
+        </div>
+        """, unsafe_allow_html=True)
         return
 
-    if not approved_requests:
-        st.info("No approved requests awaiting pickup.")
-        return
+    options = {}
+    for r in approved:
+        label = f"{r.get('food_name', 'Food')} → {r.get('recipient_name', 'NGO')} · {fmt_kg(_req_qty(r))}"
+        options[label] = _sid(r)
 
-    options = {
-        f"#{r.get('id') or r.get('request_id')} – {r.get('food_name','?')} → {r.get('recipient_name','?')}":
-        r.get("id") or r.get("request_id")
-        for r in approved_requests
-    }
+    selected_label = st.selectbox("Approved request", list(options.keys()), key="pin_request")
+    pin_input = st.text_input("NGO's 4-digit PIN", max_chars=4, type="password",
+                              placeholder="••••", key="pin_input",
+                              help="The NGO reads this from their pickup pass at handover.")
 
-    selected_label = st.selectbox("Select Approved Request", list(options.keys()))
-    request_id     = options[selected_label]
-
-    pin_input = st.text_input(
-        "Enter NGO's 4-digit PIN",
-        max_chars=4,
-        placeholder="e.g. 4782",
-        type="password",
-    )
-
-    if st.button("🔓 Verify & Confirm Pickup", use_container_width=True):
-        if len(pin_input) != 4 or not pin_input.isdigit():
-            st.error("Please enter a valid 4-digit PIN.")
-            return
-        try:
-            result = database.verify_pickup_pin(request_id, pin_input)
-            if result:
-                st.success("✅ PIN verified! Pickup confirmed. Thank you for reducing food waste 🌱")
-                st.balloons()
-                st.rerun()
+    if st.button("Verify & Complete Pickup", key="pin_verify",
+                 use_container_width=True, type="primary"):
+        pin = pin_input.strip()
+        if len(pin) != 4 or not pin.isdigit():
+            st.error("Enter the 4-digit numeric PIN shown by the NGO.")
+        else:
+            try:
+                ok, msg = database.verify_pickup_pin(options[selected_label], pin)
+            except Exception as exc:
+                st.error(f"Verification failed: {exc}")
             else:
-                st.error("❌ Incorrect PIN. Please ask the NGO to check their pass.")
-        except Exception as exc:
-            st.error(f"Verification failed: {exc}")
+                if ok:
+                    st.success(f"🎉 {msg}")
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
 
 
-# ── Main entry point ─────────────────────────────────────────────────────────
-
-def render() -> None:
+# ── Render ──────────────────────────────────────────────────────────────────
+def render():
+    donor_id = str(st.session_state.get("user_id", ""))
     donor_name = st.session_state.get("user_name", "Donor")
 
-    st.markdown(
-        f"<h2 style='color:{BLUE};margin-bottom:4px;'>👋 Welcome, {donor_name}</h2>"
-        f"<p style='color:#555;margin-top:0;'>Manage your surplus food listings and pickups.</p>",
-        unsafe_allow_html=True,
-    )
+    try:
+        listings = database.get_donor_listings(donor_id) or []
+    except Exception:
+        listings = []
+    try:
+        requests = database.get_requests_for_donor(donor_id) or []
+    except Exception:
+        requests = []
 
-    _render_kpis(donor_name)
-    st.markdown("<hr style='margin:20px 0;'>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="fl-page-head fl-wrap-wide">
+      <h1 class="fl-page-title">👋 Donor Hub</h1>
+      <p class="fl-page-sub">
+        Welcome back, {donor_name}. Publish surplus, approve NGO claims and verify pickups.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["📦 Publish Surplus", "📋 Incoming Requests", "✅ PIN Verify"])
+    with st.container(key="donor_body"):
+        _kpi_strip(listings, requests)
 
-    with tab1:
-        _tab_publish()
+        tab_publish, tab_requests, tab_pin = st.tabs(
+            ["📦 Publish Surplus", "📬 Incoming Claims", "🔐 PIN Handshake"]
+        )
+        with tab_publish:
+            with st.container(key="donor_publish"):
+                _publish_form()
+        with tab_requests:
+            with st.container(key="donor_requests"):
+                _requests_queue(requests)
+        with tab_pin:
+            with st.container(key="donor_pin"):
+                _pin_handshake(requests)
 
-    with tab2:
-        _tab_requests(donor_name)
-
-    with tab3:
-        _tab_pin_verify(donor_name)
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)

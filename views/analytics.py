@@ -1,149 +1,225 @@
 """
-views/analytics.py  –  FoodLoop Platform Analytics
-Available to all authenticated users.
+views/analytics.py  -  FoodLoop Impact & Analytics
+Accessible to every authenticated role.
 """
 import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
+import plotly.express as px
 import database
 from utils import fmt_kg, fmt_num, format_countdown, is_urgent
 
 BLUE = "#014BAA"
 BLUE2 = "#0264E0"
+EMERALD = "#10B981"
+AMBER = "#F59E0B"
 CORAL = "#D9381E"
-CREAM = "#F8F3F0"
+
+STATUS_LABELS = {
+    "pending": "Pending",
+    "approved": "Approved",
+    "completed": "Completed",
+    "rejected": "Rejected",
+}
+
+CHART_FONT = dict(family="Plus Jakarta Sans, Inter, sans-serif", size=12, color="#475569")
+
+
+def _sid(doc) -> str:
+    return str(doc.get("_id", ""))
+
+
+def _kpi_cards(stats):
+    cards = [
+        ("📦", fmt_num(stats.get("total_listings", 0)),                     "Total Listings"),
+        ("✅", fmt_num(stats.get("completed_pickups", 0)),                  "Successful Pickups"),
+        ("📬", fmt_num(stats.get("pending_requests", 0)),                   "Pending Requests"),
+        ("⚖️", fmt_kg(float(stats.get("total_kg_diverted", 0) or 0)),       "Food Redistributed"),
+    ]
+    html = "".join(
+        f'<div class="fl-kpi"><div class="fl-kpi-icon">{icon}</div>'
+        f'<div class="fl-kpi-val">{val}</div>'
+        f'<div class="fl-kpi-label">{label}</div></div>'
+        for icon, val, label in cards
+    )
+    st.markdown(f'<div class="fl-kpi-grid">{html}</div>', unsafe_allow_html=True)
+
+
+def _base_layout(fig, margin=None):
+    fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=CHART_FONT,
+        margin=margin or dict(l=6, r=6, t=6, b=6),
+        showlegend=False,
+        hoverlabel=dict(bgcolor="white", font_size=12, font_family="Plus Jakarta Sans"),
+    )
+    return fig
+
+
+def _weekly_chart():
+    st.markdown('<div class="fl-chart-title">📈 Weekly Collection Volume (kg)</div>',
+                unsafe_allow_html=True)
+    try:
+        weekly = database.get_weekly_trend() or []
+    except Exception as exc:
+        st.info(f"Weekly data unavailable: {exc}")
+        return
+
+    if not weekly:
+        st.info("No completed pickups yet — this chart fills in as donations are collected.")
+        return
+
+    df = pd.DataFrame(weekly)
+    fig = px.bar(df, x="week_label", y="kg_donated",
+                 labels={"week_label": "", "kg_donated": "kg collected"},
+                 color_discrete_sequence=[BLUE])
+    fig.update_traces(marker_line_width=0, opacity=0.92,
+                      hovertemplate="%{x}<br><b>%{y:.1f} kg</b> collected<extra></extra>")
+    fig.update_layout(xaxis=dict(showgrid=False, tickangle=-35),
+                      yaxis=dict(gridcolor="rgba(1,75,170,0.07)", zeroline=False))
+    _base_layout(fig, margin=dict(l=0, r=4, t=4, b=0))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _status_donut():
+    st.markdown('<div class="fl-chart-title">🍩 Request Status Breakdown</div>',
+                unsafe_allow_html=True)
+    try:
+        counts = database.get_request_status_counts() or {}
+    except Exception as exc:
+        st.info(f"Request data unavailable: {exc}")
+        return
+
+    df = pd.DataFrame(
+        [{"Status": STATUS_LABELS.get(k, k.title()), "Count": v} for k, v in counts.items() if v]
+    )
+    if df.empty:
+        st.info("No claims recorded yet.")
+        return
+
+    color_map = {"Pending": AMBER, "Approved": BLUE2, "Completed": EMERALD, "Rejected": CORAL}
+    fig = px.pie(df, names="Status", values="Count", hole=0.55,
+                 color="Status", color_discrete_map=color_map)
+    fig.update_traces(textposition="outside", textinfo="percent",
+                      marker=dict(line=dict(color="#FFFFFF", width=2)))
+    _base_layout(fig, margin=dict(l=0, r=0, t=0, b=0))
+    fig.update_layout(legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center"))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _category_chart():
+    st.markdown('<div class="fl-chart-title">📦 Quantity Donated by Category (kg)</div>',
+                unsafe_allow_html=True)
+    try:
+        categories = database.get_category_totals() or []
+    except Exception as exc:
+        st.info(f"Category data unavailable: {exc}")
+        return
+
+    if not categories:
+        st.info("No completed donations by category yet.")
+        return
+
+    df = pd.DataFrame(categories)
+    fig = px.bar(df, x="category", y="total_kg",
+                 labels={"category": "", "total_kg": "kg redistributed"},
+                 color_discrete_sequence=[BLUE2])
+    fig.update_traces(marker_line_width=0, opacity=0.9,
+                      hovertemplate="%{x}<br><b>%{y:.1f} kg</b><extra></extra>")
+    fig.update_layout(xaxis=dict(showgrid=False),
+                      yaxis=dict(gridcolor="rgba(1,75,170,0.07)", zeroline=False))
+    _base_layout(fig, margin=dict(l=0, r=4, t=4, b=0))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _expiring_table():
+    st.markdown('<div class="fl-chart-title">⏳ Soon-to-Expire Surplus</div>',
+                unsafe_allow_html=True)
+    try:
+        listings = database.get_expiring_listings(hours=12) or []
+    except Exception as exc:
+        st.info(f"Expiry data unavailable: {exc}")
+        return
+
+    if not listings:
+        st.success("✅ No listings expiring in the next 12 hours.")
+        return
+
+    rows = []
+    for item in listings:
+        rows.append({
+            "Food":      item.get("food_name", "—"),
+            "Category":  item.get("category", "—"),
+            "Donor":     item.get("donor_name", "—"),
+            "Qty (kg)":  round(float(item.get("remaining_qty_kg", 0) or 0), 1),
+            "Time Left": format_countdown(item.get("pickup_deadline")),
+            "Priority":  "🔴 URGENT" if is_urgent(item.get("pickup_deadline")) else "🟡 Soon",
+        })
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Qty (kg)": st.column_config.NumberColumn("Qty (kg)", format="%.1f"),
+            "Priority": st.column_config.TextColumn("Priority", width="small"),
+        },
+    )
+
 
 def render():
+    try:
+        stats = database.get_platform_stats() or {}
+    except Exception:
+        stats = {}
+
     st.markdown("""
-    <div style="padding:24px 32px 8px;">
-      <h1 style="font-size:2rem;font-weight:900;color:#0F172A;margin:0;">📊 Impact Analytics</h1>
-      <p style="color:#64748B;margin-top:4px;">Real-time platform performance metrics and SDG impact tracking.</p>
+    <div class="fl-page-head fl-wrap-wide">
+      <h1 class="fl-page-title">📊 Impact &amp; Analytics</h1>
+      <p class="fl-page-sub">
+        Platform-wide food recovery, claim performance and SDG-12 impact — live from MongoDB.
+      </p>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── KPI Strip ─────────────────────────────────────────────────────────────
-    stats = database.get_platform_stats()
-    kpis = [
-        ("🍽️", "Total Meals Saved",     fmt_num(stats.get("total_meals_saved", 0)),   "#014BAA"),
-        ("⚖️", "Food Diverted",         fmt_kg(stats.get("total_kg_diverted", 0.0)),  "#059669"),
-        ("📦", "Active Listings",        str(stats.get("active_listings", 0)),          "#7C3AED"),
-        ("✅", "Completed Pickups",      str(stats.get("completed_pickups", 0)),        "#D97706"),
-    ]
-    cols = st.columns(4)
-    for col, (icon, label, val, color) in zip(cols, kpis):
-        col.markdown(f"""
-        <div style="background:white;border-radius:16px;border:1px solid rgba(1,75,170,0.08);
-             box-shadow:0 8px 30px rgba(1,75,170,0.06);padding:20px;text-align:center;margin:4px;">
-          <div style="font-size:1.6rem;margin-bottom:6px;">{icon}</div>
-          <div style="font-size:1.5rem;font-weight:900;color:{color};">{val}</div>
-          <div style="font-size:0.78rem;font-weight:600;color:#64748B;margin-top:4px;">{label}</div>
-        </div>""", unsafe_allow_html=True)
+    with st.container(key="analytics_body"):
+        _kpi_cards(stats)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        c1, c2 = st.columns([1.45, 1])
+        with c1:
+            with st.container(key="chart_weekly"):
+                _weekly_chart()
+        with c2:
+            with st.container(key="chart_status"):
+                _status_donut()
 
-    # ── Charts Row 1 ─────────────────────────────────────────────────────────
-    ch1, ch2 = st.columns(2)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        c3, c4 = st.columns([1.45, 1])
+        with c3:
+            with st.container(key="chart_category"):
+                _category_chart()
+        with c4:
+            with st.container(key="chart_expiring"):
+                _expiring_table()
 
-    with ch1:
-        st.markdown("#### 📈 Weekly Donation Trend")
-        weekly = database.get_weekly_trend()
-        if weekly:
-            df_w = pd.DataFrame(weekly)
-            # expected keys: week_label (str), kg_donated (float), pickups (int)
-            if "week_label" in df_w.columns and "kg_donated" in df_w.columns:
-                fig = px.bar(df_w, x="week_label", y="kg_donated",
-                             color_discrete_sequence=[BLUE],
-                             labels={"week_label": "Week", "kg_donated": "Kg Donated"})
-                fig.update_layout(
-                    plot_bgcolor="white", paper_bgcolor="white",
-                    margin=dict(l=10, r=10, t=10, b=10),
-                    font=dict(family="Plus Jakarta Sans, Inter, sans-serif"),
-                    showlegend=False,
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Weekly trend data format mismatch.")
-        else:
-            st.info("No weekly trend data available yet.")
+        kg = float(stats.get("total_kg_diverted", 0) or 0)
+        meals = int(stats.get("total_meals_saved", 0) or 0)
+        co2 = round(kg * 2.5, 1)
+        st.markdown(f"""
+        <div class="fl-impact-banner">
+          <div class="fl-impact-label">🌍 Cumulative Climate Impact</div>
+          <div class="fl-impact-value">{co2:,.1f} kg CO₂e avoided</div>
+          <div style="font-size:0.92rem;opacity:.85;max-width:560px;line-height:1.6;">
+            Every kilogram rescued keeps edible food out of landfill and puts a warm meal
+            in front of someone in the Jalandhar–Phagwara corridor.
+          </div>
+          <div class="fl-impact-stats">
+            <div class="fl-impact-stat"><b>{fmt_kg(kg)}</b><span>Food Rescued</span></div>
+            <div class="fl-impact-stat"><b>{fmt_num(meals)}</b><span>Meals Saved</span></div>
+            <div class="fl-impact-stat"><b>{fmt_num(stats.get('completed_pickups', 0))}</b><span>Pickups</span></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    with ch2:
-        st.markdown("#### 🍩 Request Status Breakdown")
-        status_counts = database.get_request_status_counts()
-        if status_counts:
-            df_s = pd.DataFrame(list(status_counts.items()), columns=["Status", "Count"])
-            fig2 = px.pie(df_s, names="Status", values="Count", hole=0.55,
-                          color_discrete_sequence=[BLUE, "#60A5FA", "#059669", CORAL])
-            fig2.update_layout(
-                plot_bgcolor="white", paper_bgcolor="white",
-                margin=dict(l=10, r=10, t=10, b=10),
-                font=dict(family="Plus Jakarta Sans, Inter, sans-serif"),
-                legend=dict(orientation="h", y=-0.1),
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("No request data yet.")
-
-    # ── Charts Row 2 ─────────────────────────────────────────────────────────
-    ch3, ch4 = st.columns(2)
-
-    with ch3:
-        st.markdown("#### 📦 Food Category Breakdown")
-        cat_data = database.get_category_totals()
-        if cat_data:
-            df_c = pd.DataFrame(cat_data)
-            # expected keys: category (str), total_kg (float)
-            if "category" in df_c.columns and "total_kg" in df_c.columns:
-                fig3 = px.bar(df_c.sort_values("total_kg"), x="total_kg", y="category",
-                              orientation="h", color_discrete_sequence=[BLUE2],
-                              labels={"total_kg": "Total kg", "category": "Category"})
-                fig3.update_layout(
-                    plot_bgcolor="white", paper_bgcolor="white",
-                    margin=dict(l=10, r=10, t=10, b=10),
-                    font=dict(family="Plus Jakarta Sans, Inter, sans-serif"),
-                    showlegend=False,
-                )
-                st.plotly_chart(fig3, use_container_width=True)
-            else:
-                st.info("Category data format mismatch.")
-        else:
-            st.info("No category data yet.")
-
-    with ch4:
-        st.markdown("#### ⏰ Expiring Soon (Next 3 Hours)")
-        expiring = database.get_expiring_listings()
-        if expiring:
-            rows = []
-            for item in expiring:
-                urgent = is_urgent(item.get("pickup_deadline"))
-                rows.append({
-                    "Food": item.get("food_name", "Unknown"),
-                    "Category": item.get("category", ""),
-                    "Qty (kg)": item.get("quantity_kg", 0),
-                    "Deadline": format_countdown(item.get("pickup_deadline")),
-                    "⚠️": "🔴 URGENT" if urgent else "🟡 Soon",
-                })
-            df_e = pd.DataFrame(rows)
-            st.dataframe(df_e, use_container_width=True, hide_index=True)
-        else:
-            st.success("✅ No listings expiring in the next 3 hours.")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── CO2e Impact Banner ────────────────────────────────────────────────────
-    kg_total = stats.get("total_kg_diverted", 0.0)
-    co2_saved = round(kg_total * 2.5, 1)
-    meals = stats.get("total_meals_saved", 0)
-
-    st.markdown(f"""
-    <div style="background:linear-gradient(135deg,#014BAA 0%,#0264E0 100%);border-radius:20px;
-         padding:32px 40px;text-align:center;margin:16px 4px;color:white;">
-      <div style="font-size:1.1rem;font-weight:700;opacity:0.9;margin-bottom:8px;">
-        🌍 Cumulative Climate Impact
-      </div>
-      <div style="font-size:3rem;font-weight:900;letter-spacing:-1px;">{co2_saved} kg CO₂e</div>
-      <div style="font-size:1rem;opacity:0.8;margin-top:6px;">
-        Avoided by redistributing {fmt_kg(kg_total)} of food — equivalent to {fmt_num(meals)} meals saved.
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)

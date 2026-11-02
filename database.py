@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import hashlib
 import random
+import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -24,6 +25,13 @@ class _MockResult:
             self.inserted_ids = ids
         else:
             self.inserted_id = ids
+
+
+class _MockUpdateResult:
+    def __init__(self, matched: int, modified: int):
+        self.matched_count = matched
+        self.modified_count = modified
+        self.acknowledged = True
 
 
 class _MockCollection:
@@ -78,11 +86,30 @@ class _MockCollection:
             if "$inc" in update:
                 for k, v in update["$inc"].items():
                     doc[k] = doc.get(k, 0) + v
-        elif upsert:
+            return _MockUpdateResult(1, 1)
+        if upsert:
             new_doc = {**query}
             if "$set" in update:
                 new_doc.update(update["$set"])
             self.insert_one(new_doc)
+            return _MockUpdateResult(0, 1)
+        return _MockUpdateResult(0, 0)
+
+    def update_many(self, query, update, upsert=False):
+        hits = self._match(query)
+        for doc in hits:
+            if "$set" in update:
+                doc.update(update["$set"])
+            if "$inc" in update:
+                for k, v in update["$inc"].items():
+                    doc[k] = doc.get(k, 0) + v
+        if not hits and upsert:
+            new_doc = {**query}
+            if "$set" in update:
+                new_doc.update(update["$set"])
+            self.insert_one(new_doc)
+            return _MockUpdateResult(1, 1)
+        return _MockUpdateResult(len(hits), len(hits))
 
     def delete_one(self, query):
         hits = self._match(query)
@@ -259,6 +286,13 @@ FOOD_NAMES  = {
     "Packaged":     ["Biscuit Packets", "Instant Noodles", "Juice Cartons", "Chips", "Energy Bars"],
 }
 STORAGE     = ["Room Temp", "Refrigerated", "Frozen"]
+LOCATIONS   = [
+    "LPU Campus, Phagwara",
+    "GT Road, Jalandhar",
+    "Model Town, Jalandhar",
+    "Law Gate, Phagwara",
+    "Cantt Road, Jalandhar",
+]
 
 
 def _seed(db):
@@ -362,6 +396,7 @@ def _seed(db):
                 "remaining_qty_kg":  qty,
                 "servings_estimate": int(qty * 2),
                 "storage_condition": random.choice(STORAGE),
+                "location":          LOCATIONS[i % len(LOCATIONS)],
                 "description":       "",
                 "created_at":        now - timedelta(hours=random.randint(1, 4)),
                 "pickup_deadline":   now + timedelta(hours=hours),
@@ -379,6 +414,7 @@ def _seed(db):
             "remaining_qty_kg": 0 if stat in ("collected", "expired") else qty,
             "servings_estimate": int(qty * 2),
             "storage_condition": "Room Temp",
+            "location": "GT Road, Jalandhar",
             "description": "", "created_at": now - timedelta(days=1),
             "pickup_deadline": now - timedelta(hours=2),
             "status": stat,
@@ -431,21 +467,76 @@ def authenticate(email: str, password: str) -> Optional[dict]:
     return None
 
 
-def create_user(name, email, password, phone, address, role) -> tuple[bool, str]:
+def generate_session_token() -> str:
+    """Opaque token used to restore a login after a browser refresh."""
+    return secrets.token_urlsafe(32)
+
+
+def start_session(user_id) -> str:
+    """Create and persist a fresh session token for the user; return it."""
+    token = generate_session_token()
+    cols = get_collections()
+    cols["users"].update_one(
+        {"_id": _as_object_id(user_id)},
+        {"$set": {"session_token": token,
+                  "session_started_at": datetime.now(timezone.utc)}},
+    )
+    return token
+
+
+def get_user_by_session_token(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    cols = get_collections()
+    return cols["users"].find_one({"session_token": str(token)})
+
+
+def clear_session_token(token: str) -> None:
+    """Invalidate a session token (used on explicit logout)."""
+    if not token:
+        return
+    cols = get_collections()
+    cols["users"].update_one({"session_token": str(token)},
+                             {"$set": {"session_token": None}})
+
+
+def _as_object_id(value):
+    """Convert to ObjectId when possible, otherwise keep the raw (mock) id."""
+    try:
+        from bson import ObjectId
+        return ObjectId(str(value))
+    except Exception:
+        return value
+
+
+def create_user(name, email, password, phone, address, role) -> Optional[dict]:
+    """Create a user and return the new document, or None if the email exists."""
     cols = get_collections()
     if cols["users"].find_one({"email": email.strip().lower()}):
-        return False, "Email already registered."
-    cols["users"].insert_one({
+        return None
+    doc = {
         "name":          name.strip(),
         "email":         email.strip().lower(),
         "password_hash": hash_password(password),
         "role":          role,
         "phone":         phone.strip(),
         "address":       address.strip(),
-        "is_verified":   True,   # Phase 1: auto-verify
+        "is_verified":   False,   # verified by an admin
         "reward_points": 0,
-    })
-    return True, "Account created successfully."
+        "session_token": None,
+    }
+    result = cols["users"].insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return doc
+
+
+def get_user_by_id(user_id) -> Optional[dict]:
+    cols = get_collections()
+    oid = _as_object_id(user_id)
+    doc = cols["users"].find_one({"_id": oid})
+    if doc is None and oid != user_id:
+        doc = cols["users"].find_one({"_id": user_id})
+    return doc
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -453,7 +544,7 @@ def create_user(name, email, password, phone, address, role) -> tuple[bool, str]
 # ════════════════════════════════════════════════════════════════════════════
 
 def add_listing(donor_id, donor_name, food_name, category, quantity_kg,
-                servings, storage, safe_hours, description="") -> str:
+                servings, storage, safe_hours, location="", description="") -> str:
     from datetime import timedelta
     cols = get_collections()
     now  = datetime.now(timezone.utc)
@@ -466,6 +557,7 @@ def add_listing(donor_id, donor_name, food_name, category, quantity_kg,
         "remaining_qty_kg":  float(quantity_kg),
         "servings_estimate": int(servings),
         "storage_condition": storage,
+        "location":          location.strip(),
         "description":       description,
         "created_at":        now,
         "pickup_deadline":   now + timedelta(hours=safe_hours),
@@ -478,7 +570,11 @@ def add_listing(donor_id, donor_name, food_name, category, quantity_kg,
 def get_available_listings(category=None, location=None) -> list:
     cols = get_collections()
     now  = datetime.now(timezone.utc)
-    q: dict = {"status": "available", "pickup_deadline": {"$gt": now}}
+    q: dict = {
+        "status": "available",
+        "pickup_deadline": {"$gt": now},
+        "remaining_qty_kg": {"$gt": 0},
+    }
     if category and category != "All":
         q["category"] = category
     try:
@@ -509,14 +605,14 @@ def cancel_listing(listing_id: str):
     cols["food_listings"].update_one({"_id": oid}, {"$set": {"status": "cancelled"}})
 
 
-def expire_old_listings():
-    """Mark past-deadline available listings as expired."""
+def expire_old_listings() -> int:
+    """Mark every past-deadline available listing as expired. Returns affected count."""
     cols = get_collections()
     now = datetime.now(timezone.utc)
-    cols["food_listings"].update_one(
-        {"status": "available", "pickup_deadline": {"$lt": now}},
-        {"$set": {"status": "expired"}},
-    )
+    q = {"status": "available", "pickup_deadline": {"$lt": now}}
+    affected = cols["food_listings"].count_documents(q)
+    cols["food_listings"].update_many(q, {"$set": {"status": "expired"}})
+    return affected
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -542,6 +638,8 @@ def create_request(listing_id: str, recipient_id: str, recipient_name: str, qty_
         "donor_id":        listing["donor_id"],
         "donor_name":      listing["donor_name"],
         "food_name":       listing["food_name"],
+        "location":        listing.get("location", ""),
+        "category":        listing.get("category", ""),
         "recipient_id":    recipient_id,
         "recipient_name":  recipient_name,
         "requested_qty_kg": float(qty_kg),
@@ -599,7 +697,7 @@ def approve_request(request_id: str) -> tuple[bool, str]:
             {"_id": lid},
             {"$set": {"remaining_qty_kg": new_qty, "status": new_status}},
         )
-    return True, pin
+    return True, "Claim approved — a secret 4-digit pickup PIN was issued to the NGO."
 
 
 def reject_request(request_id: str) -> bool:
@@ -635,10 +733,14 @@ def verify_pickup_pin(request_id: str, entered_pin: str) -> tuple[bool, str]:
     now = datetime.now(timezone.utc)
     qty = req["requested_qty_kg"]
 
-    # Mark request completed
-    cols["donation_requests"].update_one(
-        {"_id": oid}, {"$set": {"status": "completed", "completed_at": now}}
+    # Mark request completed — conditional on 'approved' so a PIN cannot
+    # complete (and re-log) the same pickup twice.
+    guard = cols["donation_requests"].update_one(
+        {"_id": oid, "status": "approved"},
+        {"$set": {"status": "completed", "completed_at": now, "pickup_pin": None}},
     )
+    if getattr(guard, "modified_count", 0) == 0:
+        return False, "This pickup has already been completed."
 
     # Mark listing collected
     try:
@@ -679,7 +781,9 @@ def verify_pickup_pin(request_id: str, entered_pin: str) -> tuple[bool, str]:
 
 def get_all_users() -> list:
     cols = get_collections()
-    return list(cols["users"].find())
+    users = list(cols["users"].find())
+    order = {"donor": 0, "recipient": 1, "admin": 2}
+    return sorted(users, key=lambda u: (order.get(u.get("role"), 3), u.get("name", "")))
 
 
 def toggle_user_verification(user_id: str, status: bool):
@@ -742,6 +846,10 @@ def get_platform_stats() -> dict:
         "completed_pickups": pickups_done,
         "pending_requests": pending_reqs,
         "total_listings": total_listed,
+        # sorted-byweek aliases used by the analytics view
+        "total_kg_diverted": total_kg,
+        "total_meals_saved": total_meals,
+        "total_co2_avoided": total_co2,
     }
 
 
@@ -758,7 +866,7 @@ def get_weekly_trend() -> list:
         # ISO week label
         label = dt.strftime("%Y-W%W")
         buckets[label] = buckets.get(label, 0) + h.get("quantity_kg", 0)
-    result = [{"week": k, "qty_kg": round(v, 1)} for k, v in sorted(buckets.items())]
+    result = [{"week_label": k, "kg_donated": round(v, 1)} for k, v in sorted(buckets.items())]
     return result[-13:]   # last 13 weeks
 
 
@@ -768,7 +876,7 @@ def get_category_totals() -> list:
     for h in hist:
         cat = h.get("food_category", "Other")
         buckets[cat] = buckets.get(cat, 0) + h.get("quantity_kg", 0)
-    return [{"category": k, "qty_kg": round(v, 1)} for k, v in sorted(buckets.items(), key=lambda x: -x[1])]
+    return [{"category": k, "total_kg": round(v, 1)} for k, v in sorted(buckets.items(), key=lambda x: -x[1])]
 
 
 def get_request_status_counts() -> dict:
@@ -777,10 +885,10 @@ def get_request_status_counts() -> dict:
     return {s: cols["donation_requests"].count_documents({"status": s}) for s in statuses}
 
 
-def get_expiring_listings() -> list:
+def get_expiring_listings(hours: int = 6) -> list:
     cols = get_collections()
     now  = datetime.now(timezone.utc)
-    future = now + timedelta(hours=24)
+    future = now + timedelta(hours=hours)
     q = {"status": "available", "pickup_deadline": {"$gt": now, "$lt": future}}
     try:
         from pymongo import ASCENDING

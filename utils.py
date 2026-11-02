@@ -101,7 +101,7 @@ def get_logo_img(height: int = 42, variant: str = "blue", margin_right=10) -> st
     """Return HTML <img> tag with blue/white logo."""
     b64 = get_logo_b64(variant)
     if not b64:
-        return "🍲"
+        return ""
     return (
         f'<img src="data:image/png;base64,{b64}" '
         f'alt="FoodLoop" '
