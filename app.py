@@ -137,39 +137,39 @@ def _render_dash_nav():
     page       = st.session_state.get("page", "dashboard")
 
     verified_html = (
-        '<span class="fl-verified">✅ Verified</span>' if verified
-        else '<span class="fl-verified" style="background:#FEF3C7;color:#92400E;">⏳ Pending</span>'
+        '<span class="fl-verified">Verified</span>' if verified
+        else '<span class="fl-verified" style="background:#FEF3C7;color:#92400E;">Pending</span>'
     )
 
     with st.container(key="dash_nav"):
         c_brand, c_analytics, c_dash, c_logout = st.columns([5.4, 1.35, 1.15, 0.95])
         with c_brand:
-            st.markdown(f"""
-            <div class="fl-dash-user">
-              <span style="width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,#014BAA,#0264E0);
-                    display:inline-flex;align-items:center;justify-content:center;overflow:hidden;
-                    box-shadow:0 4px 12px rgba(1,75,170,.3);">{logo}</span>
-              <span class="fl-nav-name" style="font-size:1.02rem;letter-spacing:-.3px;">FoodLoop</span>
-              <span style="width:1px;height:20px;background:rgba(1,75,170,.12);margin:0 4px;"></span>
-              <span class="fl-dash-name">{user_name}</span>
-              {verified_html}
-              <span class="fl-role-tag {role_class}">{role_label}</span>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="fl-dash-user">'
+                f'<span style="width:32px;height:32px;border-radius:6px;background:#014BAA;'
+                f'display:inline-flex;align-items:center;justify-content:center;overflow:hidden;">{logo}</span>'
+                f'<span class="fl-nav-name" style="font-size:1rem;">FoodLoop</span>'
+                f'<span style="width:1px;height:18px;background:rgba(31,27,22,.12);margin:0 4px;"></span>'
+                f'<span class="fl-dash-name">{user_name}</span>'
+                f'{verified_html}'
+                f'<span class="fl-role-tag {role_class}">{role_label}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
         with c_analytics:
-            if st.button("📊 Impact Analytics", key="nav_analytics",
+            if st.button("Impact analytics", key="nav_analytics",
                          use_container_width=True,
                          type="primary" if page == "analytics" else "secondary"):
                 st.session_state.page = "analytics"
                 st.rerun()
         with c_dash:
-            if st.button("🏠 Workspace", key="nav_dashboard",
+            if st.button("Workspace", key="nav_dashboard",
                          use_container_width=True,
                          type="primary" if page == "dashboard" else "secondary"):
                 st.session_state.page = "dashboard"
                 st.rerun()
         with c_logout:
-            if st.button("Log Out", key="nav_logout", use_container_width=True):
+            if st.button("Log out", key="nav_logout", use_container_width=True):
                 _logout()
 
 

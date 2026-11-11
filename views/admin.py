@@ -5,7 +5,7 @@ Role: admin
 import streamlit as st
 import pandas as pd
 import database
-from utils import fmt_kg, fmt_num, format_countdown, export_history_csv
+from utils import fmt_kg, fmt_num, format_countdown, export_history_csv, icon
 
 ROLE_LABELS = {"donor": "Donor", "recipient": "NGO", "admin": "Admin"}
 
@@ -19,31 +19,33 @@ def _kpi_strip(users, listings, requests, stats):
     active = sum(1 for l in listings if l.get("status") == "available")
     pending = sum(1 for r in requests if r.get("status") == "pending")
 
+    # Pass 3+5: no emoji, no uppercase labels
     cards = [
-        ("🏫", fmt_num(len(users)),                        "Organizations"),
-        ("🛡️", fmt_num(verified),                           "Verified Accounts"),
-        ("📦", fmt_num(active),                             "Active Listings"),
-        ("📬", fmt_num(pending),                            "Pending Claims"),
-        ("✅", fmt_num(stats.get("completed_pickups", 0)),  "Completed Pickups"),
+        (fmt_num(len(users)),                        "Organisations"),
+        (fmt_num(verified),                           "Verified accounts"),
+        (fmt_num(active),                             "Active listings"),
+        (fmt_num(pending),                            "Pending claims"),
+        (fmt_num(stats.get("completed_pickups", 0)),  "Completed pickups"),
     ]
     html = "".join(
-        f'<div class="fl-kpi"><div class="fl-kpi-icon">{icon}</div>'
+        f'<div class="fl-kpi">'
         f'<div class="fl-kpi-val">{val}</div>'
         f'<div class="fl-kpi-label">{label}</div></div>'
-        for icon, val, label in cards
+        for val, label in cards
     )
     st.markdown(f'<div class="fl-kpi-grid">{html}</div>', unsafe_allow_html=True)
 
 
 # ── Verification ────────────────────────────────────────────────────────────
 def _verification_tab(users):
-    st.markdown("""
-    <div class="fl-card-title">🛡️ Organization Verification</div>
-    <div class="fl-card-sub">
-      Only verified donors and NGOs should transact. Verify new organizations after checking
-      their details, or revoke access if something looks wrong.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="fl-card-title">Organisation verification</div>'
+        '<div class="fl-card-sub">'
+        'Only verified donors and NGOs should transact. Verify new organisations after checking '
+        'their details, or revoke access if something looks wrong.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     role_filter = st.selectbox(
         "Filter by account type",
@@ -65,21 +67,25 @@ def _verification_tab(users):
             '<span class="fl-badge-ok">VERIFIED</span>' if verified
             else '<span class="fl-badge-warn">PENDING</span>'
         )
-        st.markdown(f"""
-        <div class="fl-user-row">
-          <div>
-            <div class="fl-user-name">{user.get('name', 'Unknown')} &nbsp;{badge}
-              <span class="fl-role-tag fl-role-{'recipient' if role == 'recipient' else role}">
-                {ROLE_LABELS.get(role, role)}
-              </span>
-            </div>
-            <div class="fl-user-meta">
-              {user.get('email', '')} &nbsp;·&nbsp; 📍 {user.get('address') or '—'}
-              &nbsp;·&nbsp; 🏅 {fmt_num(user.get('reward_points', 0) or 0)} pts
-            </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="fl-user-row">'
+            f'<div>'
+            f'<div class="fl-user-name">{user.get("name", "Unknown")} &nbsp;{badge} '
+            f'<span class="fl-role-tag fl-role-{"recipient" if role == "recipient" else role}">'
+            f'{ROLE_LABELS.get(role, role)}'
+            f'</span>'
+            f'</div>'
+            f'<div class="fl-user-meta">'
+            f'{icon("mail", 13)} {user.get("email", "")}'
+            f'&nbsp;·&nbsp;'
+            f'{icon("map-pin", 13)} {user.get("address") or "—"}'
+            f'&nbsp;·&nbsp;'
+            f'{fmt_num(user.get("reward_points", 0) or 0)} pts'
+            f'</div>'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         ca, _, _ = st.columns([1.3, 1, 4])
         with ca:
@@ -96,17 +102,18 @@ def _verification_tab(users):
 
 # ── Health monitor ──────────────────────────────────────────────────────────
 def _health_tab(listings, requests):
-    st.markdown("""
-    <div class="fl-card-title">❤️ Platform Health &amp; Expiry Monitor</div>
-    <div class="fl-card-sub">
-      Run the expiry sweep to close listings past their safe pickup window, then audit live
-      listings and every claim on the platform.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="fl-card-title">Platform health &amp; expiry monitor</div>'
+        '<div class="fl-card-sub">'
+        'Run the expiry sweep to close listings past their safe pickup window, then audit live '
+        'listings and every claim on the platform.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     c1, c2 = st.columns([1.2, 2])
     with c1:
-        if st.button("⏱️ Trigger auto-expiry sweep", key="expiry_sweep",
+        if st.button("Trigger auto-expiry sweep", key="expiry_sweep",
                      use_container_width=True, type="primary"):
             try:
                 expired = database.expire_old_listings()
@@ -126,7 +133,7 @@ def _health_tab(listings, requests):
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="fl-card-title" style="font-size:0.9rem;">📦 Live &amp; Recent Listings</div>',
+    st.markdown('<div class="fl-card-title" style="font-size:0.9rem;">Live &amp; recent listings</div>',
                 unsafe_allow_html=True)
     if listings:
         df_listings = pd.DataFrame([{
@@ -142,7 +149,7 @@ def _health_tab(listings, requests):
     else:
         st.info("No listings on the platform yet.")
 
-    st.markdown('<div class="fl-card-title" style="font-size:0.9rem;">📬 Transaction Audit</div>',
+    st.markdown('<div class="fl-card-title" style="font-size:0.9rem;">Transaction audit</div>',
                 unsafe_allow_html=True)
     if requests:
         df_reqs = pd.DataFrame([{
@@ -160,12 +167,13 @@ def _health_tab(listings, requests):
 
 # ── Export ──────────────────────────────────────────────────────────────────
 def _export_tab():
-    st.markdown("""
-    <div class="fl-card-title">📤 Export Donation History</div>
-    <div class="fl-card-sub">
-      Download the full audit trail of completed donations for SDG-12 reporting and compliance.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="fl-card-title">Export donation history</div>'
+        '<div class="fl-card-sub">'
+        'Download the full audit trail of completed donations for SDG-12 reporting and compliance.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     try:
         history = database.get_all_history() or []
@@ -185,7 +193,7 @@ def _export_tab():
         unsafe_allow_html=True)
 
     st.download_button(
-        "⬇️ Download donation_history.csv",
+        "Download donation_history.csv",
         data=csv_data,
         file_name="foodloop_donation_history.csv",
         mime="text/csv",
@@ -211,21 +219,23 @@ def render():
         st.error(f"Could not load admin data: {exc}")
         users, listings, requests, stats = [], [], [], {}
 
-    st.markdown(f"""
-    <div class="fl-page-head fl-wrap-wide">
-      <h1 class="fl-page-title">🛡️ Admin Control Center</h1>
-      <p class="fl-page-sub">
-        {st.session_state.get('user_name', 'Administrator')}, verify organizations,
-        monitor expiries and audit every transaction.
-      </p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="fl-page-head fl-wrap-wide">'
+        f'<h1 class="fl-page-title">Admin control centre</h1>'
+        f'<p class="fl-page-sub">'
+        f'{st.session_state.get("user_name", "Administrator")}, verify organisations, '
+        f'monitor expiries and audit transactions.'
+        f'</p>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     with st.container(key="admin_body"):
         _kpi_strip(users, listings, requests, stats)
 
+        # Pass 3: no emoji in tab labels
         tab_verify, tab_health, tab_export = st.tabs(
-            ["🛡️ Verification", "❤️ Platform Health", "📤 Audit & Export"]
+            ["Verification", "Platform health", "Audit & export"]
         )
         with tab_verify:
             with st.container(key="admin_verify"):

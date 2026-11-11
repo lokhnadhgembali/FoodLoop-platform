@@ -4,7 +4,7 @@ Page state: st.session_state.page == "auth"
 """
 import streamlit as st
 import database
-from utils import get_logo_img
+from utils import get_logo_img, icon
 
 DEMO_ACCOUNTS = {
     "donor":     ("mess@lpu.in",       "demo123"),
@@ -12,16 +12,17 @@ DEMO_ACCOUNTS = {
     "admin":     ("admin@foodloop.in", "demo123"),
 }
 
+# Pass 3+4: no emoji in role labels
 ROLE_OPTIONS = [
     ("donor",     "Donor"),
-    ("recipient", "🤝 NGO / Recipient"),
-    ("admin",     "🛡️ Admin"),
+    ("recipient", "NGO / Recipient"),
+    ("admin",     "Admin"),
 ]
 
 LOGIN_ROLE_OPTIONS = [
     ("donor",     "Donor"),
-    ("recipient", "🤝 NGO"),
-    ("admin",     "🛡️ Admin"),
+    ("recipient", "NGO"),
+    ("admin",     "Admin"),
 ]
 
 ROLE_NAMES = {
@@ -81,37 +82,53 @@ def _set_mode(mode: str):
 
 # ── Left panel ──────────────────────────────────────────────────────────────
 def _render_left():
-    logo = get_logo_img(height=24, variant="white", margin_right=0)
+    logo = get_logo_img(height=22, variant="white", margin_right=0)
 
-    st.markdown(f"""
-    <div class="fl-auth-brand-badge">
-      <span class="icon">{logo}</span>
-      <span class="name">FoodLoop</span>
-    </div>
-    <div class="fl-auth-headline">Zero Food Waste,<br><span class="accent">Maximum Impact.</span></div>
-    <div class="fl-auth-lead">
-      A verified redistribution network for campus messes, commercial kitchens and NGOs
-      across the Jalandhar–Phagwara corridor.
-    </div>
-    <div class="fl-glass-pill"><span class="icon">🛡️</span> Verified 4-digit PIN pickup protocol</div>
-    <div class="fl-glass-pill"><span class="icon">📊</span> Real-time CO2e &amp; meal impact analytics</div>
-    <div class="fl-glass-pill"><span class="icon">⏱️</span> Automated &lt; 2hr urgent expiry flagging</div>
-    <div class="fl-glass-pill"><span class="icon">📜</span> Complete audit history of every donation</div>
-    <div class="fl-auth-proof">
-      Join 150+ campus messes, restaurants &amp; NGOs redistributing surplus on FoodLoop
-    </div>
-    <div class="fl-live-pill"><span class="dot"></span> Live Hub Active — Jalandhar-Phagwara corridor</div>
-    """, unsafe_allow_html=True)
+    # Feature list with Lucide SVG icons — no emoji
+    features = [
+        ("key",          "Verified 4-digit PIN pickup protocol"),
+        ("bar-chart",    "Real-time CO₂e and meal impact analytics"),
+        ("clock",        "Automated under-2-hour urgent expiry flagging"),
+        ("check-circle", "Complete audit history of every donation"),
+    ]
+    features_html = "".join(
+        f'<li class="fl-auth-feature">'
+        f'<span class="fl-auth-feature-icon">{icon(ic, 15)}</span>'
+        f'{label}</li>'
+        for ic, label in features
+    )
+
+    st.markdown(
+        f'<div class="fl-auth-brand-badge">'
+        f'<span class="icon">{logo}</span>'
+        f'<span class="name">FoodLoop</span>'
+        f'</div>'
+        f'<div class="fl-auth-headline">Food with nowhere to go,<br>'
+        f'<span class="accent">matched to those who need it</span>'
+        f'</div>'
+        f'<div class="fl-auth-lead">'
+        f'A verified redistribution network for campus messes, commercial kitchens and NGOs '
+        f'across the Jalandhar–Phagwara corridor.'
+        f'</div>'
+        f'<ul class="fl-auth-features">{features_html}</ul>'
+        f'<div class="fl-auth-proof">'
+        f'Campus messes, restaurants and NGOs across the Jalandhar–Phagwara corridor '
+        f'use FoodLoop to move surplus before it expires.'
+        f'</div>'
+        f'<div class="fl-live-pill"><span class="dot"></span> Live hub active</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ── Right panel ─────────────────────────────────────────────────────────────
 def _render_login():
-    logo = get_logo_img(height=30, variant="blue", margin_right=0)
-    st.markdown(f"""
-    <div style="margin-bottom:6px;">{logo}</div>
-    <h2 class="fl-form-heading">Welcome Back</h2>
-    <p class="fl-form-sub">Sign in to your dedicated FoodLoop workspace.</p>
-    """, unsafe_allow_html=True)
+    logo = get_logo_img(height=28, variant="blue", margin_right=0)
+    st.markdown(
+        f'<div style="margin-bottom:6px;">{logo}</div>'
+        f'<h2 class="fl-form-heading">Welcome back</h2>'
+        f'<p class="fl-form-sub">Sign in to your FoodLoop workspace.</p>',
+        unsafe_allow_html=True,
+    )
 
     st.markdown('<span class="fl-field-label">Sign in as</span>', unsafe_allow_html=True)
     selected_role = st.session_state.get("login_role", "donor")
@@ -135,7 +152,7 @@ def _render_login():
     password = st.text_input("Password", type="password", key="login_pass",
                              placeholder="••••••••")
 
-    if st.button("Log In to Dashboard", key="login_submit",
+    if st.button("Log in to dashboard", key="login_submit",
                  use_container_width=True, type="primary"):
         expected = st.session_state.get("login_role", "donor")
         if not email or not password:
@@ -151,7 +168,7 @@ def _render_login():
                     f"Select **{label}** above, then log in again."
                 )
             else:
-                st.error("❌ Invalid email or password. Try one of the demo accounts below.")
+                st.error("Invalid email or password. Try one of the demo accounts below.")
 
     st.markdown('<div class="fl-demo-divider">Or instant demo access</div>',
                 unsafe_allow_html=True)
@@ -159,17 +176,17 @@ def _render_login():
     with st.container(key="demo_row"):
         d1, d2, d3 = st.columns(3)
         with d1:
-            if st.button("Demo Donor", key="demo_donor", use_container_width=True):
+            if st.button("Demo donor", key="demo_donor", use_container_width=True):
                 if _login(*DEMO_ACCOUNTS["donor"])[0] == "ok":
                     st.rerun()
                 st.error("Demo donor account unavailable.")
         with d2:
-            if st.button("🤝 Demo NGO", key="demo_ngo", use_container_width=True):
+            if st.button("Demo NGO", key="demo_ngo", use_container_width=True):
                 if _login(*DEMO_ACCOUNTS["recipient"])[0] == "ok":
                     st.rerun()
                 st.error("Demo NGO account unavailable.")
         with d3:
-            if st.button("🛡️ Demo Admin", key="demo_admin", use_container_width=True):
+            if st.button("Demo admin", key="demo_admin", use_container_width=True):
                 if _login(*DEMO_ACCOUNTS["admin"])[0] == "ok":
                     st.rerun()
                 st.error("Demo admin account unavailable.")
@@ -181,14 +198,15 @@ def _render_login():
 
 
 def _render_signup():
-    logo = get_logo_img(height=30, variant="blue", margin_right=0)
-    st.markdown(f"""
-    <div style="margin-bottom:6px;">{logo}</div>
-    <h2 class="fl-form-heading">Create Account</h2>
-    <p class="fl-form-sub">Start rescuing surplus food or claiming meals for your community.</p>
-    """, unsafe_allow_html=True)
+    logo = get_logo_img(height=28, variant="blue", margin_right=0)
+    st.markdown(
+        f'<div style="margin-bottom:6px;">{logo}</div>'
+        f'<h2 class="fl-form-heading">Create account</h2>'
+        f'<p class="fl-form-sub">Start rescuing surplus food or claiming meals for your community.</p>',
+        unsafe_allow_html=True,
+    )
 
-    st.markdown('<span class="fl-field-label">Account Type</span>', unsafe_allow_html=True)
+    st.markdown('<span class="fl-field-label">Account type</span>', unsafe_allow_html=True)
     selected_role = st.session_state.get("signup_role", "donor")
     with st.container(key="role_pills"):
         cols = st.columns(3)
@@ -205,16 +223,16 @@ def _render_signup():
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    org_name = st.text_input("Organization / Username", key="reg_name",
+    org_name = st.text_input("Organisation / username", key="reg_name",
                              placeholder="LPU Central Mess or Robin Hood Army")
     email = st.text_input("Email address", key="reg_email",
                           placeholder="name@organization.org")
     password = st.text_input("Password", type="password", key="reg_pass",
                              placeholder="Minimum 6 characters")
-    phone = st.text_input("Phone & Campus / City Location", key="reg_phone",
+    phone = st.text_input("Phone & campus / city location", key="reg_phone",
                           placeholder="98765 43210 · LPU Campus, Phagwara")
 
-    if st.button("Create Account", key="register_submit",
+    if st.button("Create account", key="register_submit",
                  use_container_width=True, type="primary"):
         if not all([org_name.strip(), email.strip(), password, phone.strip()]):
             st.warning("Please fill in all fields to create your account.")
@@ -237,16 +255,17 @@ def _render_signup():
                 st.error(f"Could not create account: {exc}")
                 return
             if not user:
-                st.error("❌ That email is already registered. Try logging in instead.")
+                st.error("That email is already registered. Try logging in instead.")
             else:
                 _set_session(user)
                 st.rerun()
 
-    st.markdown("""
-    <div class="fl-link-row">
-      Your account starts as <b>pending verification</b> — an admin reviews new organizations.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="fl-link-row">'
+        'Your account starts as <b>pending verification</b> — an admin reviews new organisations.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
     if st.button("Already have an account? Log in instead", key="to_login",
                  use_container_width=True):
         _set_mode("login")
@@ -261,7 +280,7 @@ def render():
 
         with left_col:
             with st.container(key="auth_left"):
-                if st.button("← Back to Home", key="auth_back"):
+                if st.button("← Back to home", key="auth_back"):
                     st.session_state.page = "landing"
                     st.rerun()
                 _render_left()
